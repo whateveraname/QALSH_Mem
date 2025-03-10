@@ -1,7 +1,7 @@
 # ------------------------------------------------------------------------------
 #  Compile with C++ 11
 # ------------------------------------------------------------------------------
-SRCS=random.cc pri_queue.cc util.cc RSHJ.cpp
+SRCS=random.cc pri_queue.cc util.cc RSHJ.cc
 OBJS=${SRCS:.cc=.o}
 
 CXX=g++ -std=c++11
