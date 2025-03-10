@@ -77,6 +77,8 @@ public:
         const DType *query,             // input query
         MinK_List *list);               // k-NN results (return)
 
+    std::vector<int> probe(const DType *query);
+
 protected:
     // -------------------------------------------------------------------------
     void init();                    // initialze basic parameters
@@ -457,6 +459,121 @@ int QALSH<DType>::knn2(             // k-NN search (assis func for QALSH+)
     delete[] freq;
 
     return 0;
+}
+
+template<class DType>
+std::vector<int> QALSH<DType>::probe(const DType* query)
+{
+    std::vector<int> candidate_list;
+    // initialize parameters for c-k-ANNS
+    int  *freq    = new int[n_pts_];  memset(freq, 0, n_pts_*sizeof(int));
+    bool *checked = new bool[n_pts_]; memset(checked, false, n_pts_*sizeof(bool));
+
+    int   *lpos  = new int[m_];
+    int   *rpos  = new int[m_];
+    float *q_val = new float[m_];
+    for (int i = 0; i < m_; ++i) {
+        Result tmp;
+        tmp.key_ = calc_hash_value(i, query);
+        q_val[i] = tmp.key_;
+
+        Result *table = &tables_[(uint64_t)i*n_pts_];
+        int pos = std::lower_bound(table, table+n_pts_, tmp, cmp) - table;
+        if (pos == 0) { lpos[i] = -1; rpos[i] = pos; } 
+        else { lpos[i] = pos; rpos[i] = pos + 1; }
+    }
+
+    // c-k-ANNS via dynamic collision counting framework
+    bool  *flag  = new bool[m_];           // flag for each hash table
+    int   cand_cnt = 0;                    // candidate counter
+    float kdist  = MAXREAL;                // k-th NN dist
+    float radius = 1.0f;                   // search radius
+    float width  = radius * w_ / 2.0f;     // bucket width
+
+    while (true) {
+        // step 1: initialize the stop condition for current round
+        int num_flag = 0; memset(flag, true, m_*sizeof(bool));
+
+        // step 2: (R,c)-NN search (find frequent data points)
+        while (num_flag < m_) {
+            for (int j = 0; j < m_; ++j) {
+                if (!flag[j]) continue;
+
+                Result *table = &tables_[(uint64_t)j*n_pts_];
+                float q_v = q_val[j];
+                float ldist = -1.0f, rdist = -1.0f, dist = -1.0f;
+                int   cnt = -1, pos = -1, id = -1;
+
+                // step 2.1: scan the left part of hash table
+                cnt = 0; pos = lpos[j];
+                while (cnt < SCAN_SIZE) {
+                    ldist = MAXREAL;
+                    if (pos >= 0) ldist = fabs(q_v - table[pos].key_);
+                    else break;
+                    if (ldist > width) break;
+
+                    id = table[pos].id_;
+                    if (++freq[id] >= l_ && !checked[id]) {
+                        checked[id] = true;
+                        candidate_list.push_back(id);
+                        // dist = calc_lp_dist<DType>(dim_, p_, kdist, query, 
+                            // &data_[(uint64_t)id*dim_]);
+                        // kdist = list->insert(dist, id);
+                        // if (++cand_cnt >= candidates) break;
+                    }
+                    --pos; ++cnt;
+                }
+                // if (cand_cnt >= candidates) break;
+                lpos[j] = pos;
+
+                // step 2.2: scan the right part of hash table
+                cnt = 0; pos = rpos[j];
+                while (cnt < SCAN_SIZE) {
+                    rdist = MAXREAL;
+                    if (pos < n_pts_) rdist = fabs(q_v - table[pos].key_);
+                    else break;
+                    if (rdist > width) break;
+
+                    id = table[pos].id_;
+                    if (++freq[id] >= l_ && !checked[id]) {
+                        checked[id] = true;
+                        candidate_list.push_back(id);
+                        // dist = calc_lp_dist<DType>(dim_, p_, kdist, query, 
+                        //     &data_[(uint64_t)id*dim_]);
+                        // kdist = list->insert(dist, id);
+                        // if (++cand_cnt >= candidates) break;
+                    }
+                    ++pos; ++cnt;
+                }
+                // if (cand_cnt >= candidates) break;
+                rpos[j] = pos;
+
+                // step 2.3: check whether this width is finished scanned
+                if (ldist > width && rdist > width) {
+                    flag[j] = false;
+                    if (++num_flag >= m_) break;
+                }
+            }
+            // if (num_flag >= m_ || cand_cnt >= candidates) break;
+            if (num_flag >= m_) break;
+        }
+        // step 3: stop conditions t1 and t2
+        // if (kdist < c_*radius && cand_cnt >= top_k) break;
+        // if (cand_cnt >= candidates) break;
+
+        // step 4: auto-update radius
+        radius = radius * c_;
+        width  = radius * w_ / 2.0f;
+    }
+    // release space
+    delete[] flag;
+    delete[] q_val;
+    delete[] rpos;
+    delete[] lpos;
+    delete[] checked;
+    delete[] freq;
+
+    return candidate_list;
 }
 
 } // end namespace nns
